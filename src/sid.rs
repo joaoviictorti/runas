@@ -1,20 +1,14 @@
-use std::{ffi::CString, ptr::null_mut};
-use anyhow::{Result, bail};
-use windows_sys::Win32::{
-    Foundation::{FALSE, GetLastError},
-    Security::{LookupAccountNameA, SID_NAME_USE},
-};
+use std::ffi::CString;
+use std::ptr::null_mut;
 
-/// Retrieves the Security Identifier (SID) of a user account.
+use anyhow::{Result, bail};
+use windows_sys::Win32::Foundation::{FALSE, GetLastError};
+use windows_sys::Win32::Security::{LookupAccountNameA, SID_NAME_USE};
+
+/// Resolves the binary SID for a local or domain account.
 ///
-/// # Arguments
-///
-/// * `username` -  The name of the user.
-/// * `domain` - The domain name (or `"."` for the local machine).
-///
-/// # Returns
-///
-/// Containing the SID bytes on success.
+/// A non-empty domain produces a `domain\\username` lookup; an empty domain or
+/// `.` resolves the username directly.
 pub fn get_user_sid(username: &str, domain: &str) -> Result<Vec<u8>> {
     let full_account_name = if !domain.is_empty() && domain != "." {
         format!("{}\\{}", domain, username)
@@ -29,7 +23,7 @@ pub fn get_user_sid(username: &str, domain: &str) -> Result<Vec<u8>> {
     let mut sid_name = SID_NAME_USE::default();
 
     unsafe {
-        // First call to determine required SID buffer size
+        // LookupAccountNameA reports both required buffer lengths on this call.
         LookupAccountNameA(
             null_mut(),
             faqn.as_ptr().cast(),
@@ -40,7 +34,6 @@ pub fn get_user_sid(username: &str, domain: &str) -> Result<Vec<u8>> {
             &mut sid_name,
         );
 
-        // Second call to actually retrieve the SID
         let mut sid = vec![0u8; cbsid as usize];
         let mut domain_buffer = vec![0u8; len as usize];
         if LookupAccountNameA(

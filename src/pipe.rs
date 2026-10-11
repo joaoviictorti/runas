@@ -1,14 +1,14 @@
 use std::ptr::null_mut;
-use anyhow::{Result, anyhow};
-use windows_sys::Win32::Foundation::FALSE;
-use windows_sys::Win32::{
-    Foundation::HANDLE,
-    Security::SECURITY_ATTRIBUTES,
-    Storage::FileSystem::ReadFile,
-    System::Pipes::CreatePipe,
-};
 
-/// Creates an anonymous pipe and returns both read and write handles.
+use anyhow::{Result, bail};
+use windows_sys::Win32::Foundation::{FALSE, HANDLE};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::Storage::FileSystem::ReadFile;
+use windows_sys::Win32::System::Pipes::CreatePipe;
+
+/// Creates an inheritable anonymous pipe.
+///
+/// The returned tuple contains the read handle followed by the write handle.
 pub fn create_pipe() -> Result<(HANDLE, HANDLE)> {
     unsafe {
         let mut h_read = null_mut();
@@ -20,24 +20,15 @@ pub fn create_pipe() -> Result<(HANDLE, HANDLE)> {
         };
 
         if CreatePipe(&mut h_read, &mut h_write, &sa, 0) == 0 {
-            return Err(anyhow!("Error creating the pipe"));
+            bail!("error creating the pipe");
         }
 
         Ok((h_read, h_write))
     }
 }
 
-/// Reads data from an anonymous pipe until there's nothing left to read.
-///
-/// This function reads from the pipe's read handle and returns the data as a `String`.
-///
-/// # Arguments
-///
-/// * `h_read` - The read handle of the pipe.
-///
-/// # Returns
-///
-/// Containing the data read from the pipe.
+/// Reads the pipe until its writer closes and converts the bytes with UTF-8
+/// replacement for invalid sequences.
 pub fn read_pipe(h_read: HANDLE) -> String {
     let mut buffer = [0u8; 1 << 12];
     let mut bytes_read = 0;

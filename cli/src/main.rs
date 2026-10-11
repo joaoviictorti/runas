@@ -1,8 +1,17 @@
-use clap::{Parser, ArgGroup};
-use runas_rs::{Options, Runas};
+//! Command-line interface for running a process with alternate Windows credentials.
+//!
+//! # Examples
+//!
+//! ```text
+//! runas-rs -u username -p password -d DOMAIN -c "cmd.exe /c whoami" --profile
+//! ```
+
 use std::error::Error;
 
-/// Runas CLI with extended options for offensive security tasks
+use clap::{ArgGroup, Parser};
+use runas_rs::{Options, Runas};
+
+/// Command-line arguments accepted by `runas-rs`.
 #[derive(Parser, Debug)]
 #[command(
     name = "runas-rs",
@@ -16,35 +25,35 @@ use std::error::Error;
     )
 )]
 struct Args {
-    /// Username to run the command
+    /// Target account username.
     #[arg(short)]
     username: String,
 
-    /// Password for the user
+    /// Password for the target account.
     #[arg(short)]
     password: String,
 
-    /// Domain of the user (optional)
+    /// Optional Windows domain containing the target account.
     #[arg(short = 'd', long)]
     domain: Option<String>,
 
-    /// Command to execute as the specified user
+    /// Command line executed with the supplied credentials.
     #[arg(short, long)]
     command: String,
 
-    /// Use the environment of the current user
+    /// Pass the current process environment to the child process.
     #[arg(short)]
     env: bool,
 
-    /// Load user profile
+    /// Load the target user's profile.
     #[arg(long)]
     profile: bool,
 
-    /// Do not load user profile
+    /// Start without loading the target user's profile.
     #[arg(long = "noprofile")]
     no_profile: bool,
 
-    /// Use credentials for remote access only
+    /// Apply the supplied credentials only to outbound network access.
     #[arg(long)]
     netonly: bool,
 }
@@ -52,27 +61,27 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    // Handle Options based on args
-    let mut options = Options(0);
+    let mut options = Options::empty();
+
     if args.env {
-        options = options | Options::Env;
+        options |= Options::ENV;
     }
     if args.profile {
-        options = options | Options::Profile;
+        options |= Options::PROFILE;
     }
     if args.no_profile {
-        options = options | Options::NoProfile;
+        options |= Options::NO_PROFILE;
     }
     if args.netonly {
-        options = options | Options::NetOnly;
+        options |= Options::NET_ONLY;
     }
 
     let mut runas = Runas::new(&args.username, &args.password, args.domain.as_deref())
         .options(options)?;
 
     match runas.run(&args.command) {
-        Ok(output) => print!("{}", output),
-        Err(e) => println!("{}", e),
+        Ok(output) => print!("{output}"),
+        Err(e) => eprintln!("{e}"),
     }
 
     Ok(())

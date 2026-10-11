@@ -1,27 +1,37 @@
-use std::{ffi::c_void, mem::zeroed, ptr::null_mut};
-use anyhow::{Result, bail};
-use windows_sys::Win32::{
-    Foundation::*,
-    Security::*,
-    Storage::FileSystem::*,
-    System::StationsAndDesktops::*,
-    UI::WindowsAndMessaging::*,
+use std::ffi::c_void;
+use std::mem::zeroed;
+use std::ptr::null_mut;
+
+use anyhow::{bail, Result};
+use windows_sys::Win32::Foundation::{
+    FALSE, GetLastError, GENERIC_ALL, TRUE
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    DELETE, READ_CONTROL, WRITE_DAC, WRITE_OWNER
+};
+use windows_sys::Win32::System::StationsAndDesktops::{
+    DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
+    DESKTOP_HOOKCONTROL, DESKTOP_JOURNALPLAYBACK, DESKTOP_JOURNALRECORD,
+    DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    WINSTA_ACCESSCLIPBOARD, WINSTA_ACCESSGLOBALATOMS, WINSTA_CREATEDESKTOP,
+    WINSTA_ENUMDESKTOPS, WINSTA_ENUMERATE, WINSTA_EXITWINDOWS,
+    WINSTA_READATTRIBUTES, WINSTA_READSCREEN, WINSTA_WRITEATTRIBUTES,
+};
+use windows_sys::Win32::Security::{
+    AddAccessAllowedAce, AddAccessAllowedAceEx, AddAce, EqualSid, GetAce, GetAclInformation,
+    GetSecurityDescriptorDacl, GetUserObjectSecurity, InitializeAcl, InitializeSecurityDescriptor,
+    SetSecurityDescriptorDacl, SetUserObjectSecurity, ACE_HEADER, ACCESS_ALLOWED_ACE, ACL,
+    ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation, CONTAINER_INHERIT_ACE,
+    DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE, NO_PROPAGATE_INHERIT_ACE, OBJECT_INHERIT_ACE,
+    SECURITY_DESCRIPTOR,
 };
 
-/// Represents the type of Windows object to modify when adding an Access Control Entry (ACE).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Object {
-    /// Represents a Windows Station object.
-    WindowsStation,
-
-    /// Represents a Desktop object.
-    Desktop,
-}
-
-/// Required standard rights for system objects.
+/// Standard rights included in each full-access mask.
 const STANDARD_RIGHTS_REQUIRED: u32 = 0x000F0000;
 
-/// Full access permissions for a Windows Desktop object.
+/// Rights granted to the target SID on a desktop.
 const DESKTOP_ALL: u32 = DESKTOP_READOBJECTS
     | DESKTOP_CREATEWINDOW
     | DESKTOP_CREATEMENU
@@ -33,7 +43,7 @@ const DESKTOP_ALL: u32 = DESKTOP_READOBJECTS
     | DESKTOP_SWITCHDESKTOP
     | STANDARD_RIGHTS_REQUIRED;
 
-/// Full access permissions for a Windows Station object.
+/// Rights granted to the target SID on a window station.
 const WINSTA_ALL: u32 = (WINSTA_ACCESSCLIPBOARD
     | WINSTA_ACCESSGLOBALATOMS
     | WINSTA_CREATEDESKTOP
@@ -48,43 +58,41 @@ const WINSTA_ALL: u32 = (WINSTA_ACCESSCLIPBOARD
     | WRITE_DAC as i32
     | WRITE_OWNER as i32) as u32;
 
-/// A helper structure to manage Access Control Entries (ACEs) on Windows Station or Desktop objects.
+/// User object whose discretionary access control list is being managed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Object {
+    /// A window station containing one or more desktops.
+    WindowsStation,
+    /// A desktop that receives user interface objects.
+    Desktop,
+}
+
+/// Manages the access entries required by a user SID on a Windows user object.
+///
+/// Existing entries are retained when new permissions are added.
 pub struct Acl<'a> {
-    /// A handle to the Windows Station or Desktop.
     h_object: *mut c_void,
-
-    /// The security identifier (SID) of the user.
     sid: &'a mut Vec<u8>,
-
-    /// Specifies whether modifying a `WindowsStation` or `Desktop`.
     object: Object,
 }
 
 impl<'a> Acl<'a> {
-    /// Creates a new `Acl`.
-    ///
-    /// # Arguments
-    ///
-    /// * `h_object` - A handle to the Windows Station or Desktop.
-    /// * `sid` - The security identifier (SID) of the user.
-    /// * `object` - Specifies whether modifying a `WindowsStation` or `Desktop`.
+    /// Associates a user-object handle and SID with the requested object type.
     pub fn new(h_object: *mut c_void, sid: &'a mut Vec<u8>, object: Object) -> Self {
         Self { h_object, sid, object }
     }
 
-    /// Adds an Access Control Entry (ACE) to a specified Windows Station or Desktop.
+    /// Adds the access entries required by the configured SID.
     ///
-    /// # Returns
-    ///
-    /// If the operation is successful.
+    /// A window station receives an inheritable entry and a station-level
+    /// entry. A desktop receives one entry containing the desktop access mask.
     pub fn add_ace(&mut self) -> Result<()> {
         unsafe {
-            // Retrieve the required buffer size for the security descriptor
+            // Query once to obtain the security descriptor buffer length.
             let mut len = 0;
             let requested = DACL_SECURITY_INFORMATION;
             GetUserObjectSecurity(self.h_object, &requested, null_mut(), 0, &mut len);
 
-            // Allocate the buffer for the security descriptor
             let mut psid = vec![0u8; len as usize];
             if GetUserObjectSecurity(
                 self.h_object, 
@@ -94,10 +102,9 @@ impl<'a> Acl<'a> {
                 &mut len
             ) == FALSE 
             {
-                bail!("Failed to get user object security (error {})", GetLastError());
+                bail!("failed to get user object security (error {})", GetLastError());
             }
 
-            // Retrieve the DACL from the security descriptor
             let mut dacl = zeroed();
             let mut dacl_exist = 0;
             let mut dacl_present = 0;
@@ -108,10 +115,9 @@ impl<'a> Acl<'a> {
                 &mut dacl_exist
             ) == FALSE 
             {
-                bail!("Failed to get security descriptor DACL (error {})", GetLastError());
+                bail!("failed to get security descriptor DACL (error {})", GetLastError());
             }
 
-            // Obtain ACL size information
             let mut acl_info = zeroed::<ACL_SIZE_INFORMATION>();
             if GetAclInformation(
                 dacl,
@@ -120,20 +126,18 @@ impl<'a> Acl<'a> {
                 AclSizeInformation,
             ) == FALSE
             {
-                bail!("Failed to get ACL information (error {})", GetLastError());
+                bail!("failed to get ACL information (error {})", GetLastError());
             }
 
-            // Initialize a new security descriptor
             let mut security_descriptor = zeroed::<SECURITY_DESCRIPTOR>();
             if InitializeSecurityDescriptor(
                 (&mut security_descriptor as *mut SECURITY_DESCRIPTOR).cast::<c_void>(), 
                 1,
             ) == FALSE 
             {
-                bail!("Failed to initialize security descriptor (error {})", GetLastError());
+                bail!("failed to initialize security descriptor (error {})", GetLastError());
             }
 
-            // Calculate the size needed for the new ACE and updated ACL
             let new_size_ace = size_of::<ACCESS_ALLOWED_ACE>() + self.sid.len() - size_of::<u32>();
             let new_size_acl = if acl_info.AclBytesInUse == 0 {
                 (size_of::<ACL>() + (new_size_ace * 2)) as u32
@@ -141,33 +145,29 @@ impl<'a> Acl<'a> {
                 acl_info.AclBytesInUse + (new_size_ace * 2) as u32
             };
 
-            // Allocate and initialize a new DACL
             let mut new_dacl_buffer = vec![0u8; new_size_acl as usize];
             let new_dacl = new_dacl_buffer.as_mut_ptr() as *mut ACL;
             if InitializeAcl(new_dacl, new_size_acl, ACL_REVISION) == FALSE {
-                bail!("Failed to initialize ACL (error {})", GetLastError());
+                bail!("failed to initialize ACL (error {})", GetLastError());
             }
 
-            // Copy existing ACEs from the original DACL to the new DACL, if present
+            // Preserve the original entries before appending the required ones.
             if dacl_present != 0 {
                 for i in 0..acl_info.AceCount {
                     let mut ace = null_mut();
                     if GetAce(dacl, i, &mut ace) == FALSE {
-                        bail!("Failed to get ACE (error {})", GetLastError());
+                        bail!("failed to get ACE (error {})", GetLastError());
                     }
 
-                    // Add the ACE to the new DACL at the end of the list (0xffffffff indicates the end position)
                     let ace_header = ace as *mut ACE_HEADER;
                     if AddAce(new_dacl, ACL_REVISION, u32::MAX, ace, (*ace_header).AceSize as u32) == FALSE {
-                        bail!("Failed to add existing ACE (error {})", GetLastError());
+                        bail!("failed to add existing ACE (error {})", GetLastError());
                     }
                 }
             }
 
-            // Add new ACE based on the object type
             match self.object {
                 Object::WindowsStation => {
-                    // Adds an ACE to the DACL with generic permissions and inheritance
                     if AddAccessAllowedAceEx(
                         new_dacl,
                         ACL_REVISION,
@@ -176,10 +176,9 @@ impl<'a> Acl<'a> {
                         self.sid.as_mut_ptr().cast(),
                     ) == FALSE
                     {
-                        bail!("Failed to add ACE to Windows Station (error {})", GetLastError());
+                        bail!("failed to add ACE to Windows Station (error {})", GetLastError());
                     }
 
-                    // Adds another ACE to DACL with no inheritance propagation and full window station access
                     if AddAccessAllowedAceEx(
                         new_dacl, 
                         ACL_REVISION, 
@@ -188,7 +187,7 @@ impl<'a> Acl<'a> {
                         self.sid.as_mut_ptr().cast()
                     ) == FALSE 
                     {
-                        bail!("Failed to add non-propagating ACE to Windows Station (error {})", GetLastError());
+                        bail!("failed to add non-propagating ACE to Windows Station (error {})", GetLastError());
                     }
                 }
                 Object::Desktop => {
@@ -199,12 +198,11 @@ impl<'a> Acl<'a> {
                         self.sid.as_mut_ptr().cast()
                     ) == FALSE 
                     {
-                        bail!("Failed to add ACE to Desktop (error {})", GetLastError());
+                        bail!("failed to add ACE to Desktop (error {})", GetLastError());
                     }
                 }
             }
 
-            // Sets the DACL in the security descriptor
             if SetSecurityDescriptorDacl(
                 (&mut security_descriptor as *mut SECURITY_DESCRIPTOR).cast::<c_void>(), 
                 TRUE, 
@@ -212,37 +210,33 @@ impl<'a> Acl<'a> {
                 FALSE
             ) == FALSE 
             {
-                bail!("Failed to set security descriptor DACL (error {})", GetLastError());
+                bail!("failed to set security descriptor DACL (error {})", GetLastError());
             }
 
-            // Applies the security descriptor to the window station or desktop
             if SetUserObjectSecurity(
                 self.h_object, 
                 &requested, 
                 (&mut security_descriptor as *mut SECURITY_DESCRIPTOR).cast::<c_void>()
             ) == FALSE 
             {
-                bail!("Failed to set user object security (error {})", GetLastError());
+                bail!("failed to set user object security (error {})", GetLastError());
             }
 
             Ok(())
         }
     }
 
-    /// Verifies whether the necessary ACEs are already present in the security descriptor
-    /// of the specified Windows Station or Desktop.
+    /// Reports whether the SID already has every required access entry.
     ///
-    /// # Return
-    ///
-    /// If all required ACEs are found with correct permissions and flags.
+    /// Window stations require both the inheritable and station-level entries;
+    /// desktops require the desktop access mask.
     pub fn check_permissions(&mut self) -> Result<bool> {
         unsafe {
-            // Retrieve the required buffer size for the security descriptor
+            // Query once to obtain the security descriptor buffer length.
             let mut len = 0;
             let requested = DACL_SECURITY_INFORMATION;
             GetUserObjectSecurity(self.h_object, &requested, null_mut(), 0, &mut len);
 
-            // Allocate the buffer for the security descriptor
             let mut psid = vec![0u8; len as usize];
             if GetUserObjectSecurity(
                 self.h_object, 
@@ -252,10 +246,9 @@ impl<'a> Acl<'a> {
                 &mut len
             ) == FALSE 
             {
-                bail!("Failed to get user object security (error {})", GetLastError());
+                bail!("failed to get user object security (error {})", GetLastError());
             }
 
-            // Retrieve the DACL from the security descriptor
             let mut dacl = zeroed();
             let mut dacl_exist = 0;
             let mut dacl_present = 0;
@@ -266,10 +259,9 @@ impl<'a> Acl<'a> {
                 &mut dacl_exist
             ) == FALSE 
             {
-                bail!("Failed to get security descriptor DACL (error {})", GetLastError());
+                bail!("failed to get security descriptor DACL (error {})", GetLastError());
             }
 
-            // Obtain ACL size information
             let mut acl_info = zeroed::<ACL_SIZE_INFORMATION>();
             if GetAclInformation(
                 dacl,
@@ -278,34 +270,29 @@ impl<'a> Acl<'a> {
                 AclSizeInformation,
             ) == FALSE
             {
-                bail!("Failed to get ACL information (error {})", GetLastError());
+                bail!("failed to get ACL information (error {})", GetLastError());
             }
 
-            // Flags to track if expected ACEs exist
             let mut ace_win_inherit = false;
             let mut ace_win_nonprop = false;
             let mut ace_desktop = false;
 
-            // Loop through ACEs and match against expected permissions
             if dacl_present != 0 {
                 for i in 0..acl_info.AceCount {
                     let mut ace = null_mut();
                     if GetAce(dacl, i, &mut ace) == FALSE {
-                        bail!("Failed to get ACE (error {})", GetLastError());
+                        bail!("failed to get ACE (error {})", GetLastError());
                     }
 
-                    // Only process ACCESS_ALLOWED_ACE_TYPE entries
                     let ace_header = ace as *mut ACE_HEADER;
                     if (*ace_header).AceType == 0 {
                         let ace = ace as *mut ACCESS_ALLOWED_ACE;
                         let ace_sid = (&mut (*ace).SidStart as *mut u32).cast::<c_void>();
 
-                        // Check if the ACE belongs to our SID
                         if EqualSid(ace_sid, self.sid.as_mut_ptr().cast()) != FALSE {
                             let mask = (*ace).Mask;
                             let flags = (*ace).Header.AceFlags as u32;
 
-                            // Match ACE mask and flags to expected permissions
                             match self.object {
                                 Object::WindowsStation => {
                                     if mask == GENERIC_ALL && flags & 

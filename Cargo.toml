@@ -1,18 +1,28 @@
 [package]
 name = "runas-rs"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
-description = "A runas implementation with extra features written in Rust"
-license = "GPL-3.0"
-repository = "https://github.com/joaoviictorti/runas-rs"
-homepage = "https://github.com/joaoviictorti/runas-rs"
+license = "MIT OR Apache-2.0"
+authors = ["João Victor"]
+description = "Run Windows commands with alternate user credentials"
+repository = "https://github.com/joaoviictorti/runas"
+homepage = "https://github.com/joaoviictorti/runas"
+documentation = "https://docs.rs/runas-rs/latest"
 readme = "README.md"
 keywords = ["runas", "windows", "rust", "redteam"]
 categories = ["os", "security"]
-include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
+rust-version = "1.85"
+include = [
+  "src/**",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+]
 
 [dependencies]
 anyhow = { version = "1.0.97", default-features = false }
+bitflags = "2.10.0"
 
 [dependencies.windows-sys]
 version = "0.59.0"
@@ -29,6 +39,18 @@ features = [
   "Win32_System_SystemServices",
 ]
 
+[lints.rust]
+missing_docs = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
-targets = ["x86_64-pc-windows-gnu", "x86_64-pc-windows-msvc"]
+targets = [
+  "x86_64-pc-windows-gnu",
+  "x86_64-pc-windows-msvc",
+  "i686-pc-windows-gnu",
+  "i686-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
